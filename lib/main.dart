@@ -13,12 +13,12 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Flutter Demo',
+      title: 'DA',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
       ),
-      home: const MyHomePage(title: 'Flutter Demo Home Page'),
+      home: const MyHomePage(title: 'DA'),
     );
   }
 }
@@ -37,24 +37,34 @@ class _MyHomePageState extends State<MyHomePage> {
     const portalUrl = 'http://194.233.69.19:5088/da/portal?&id=650217&site=APP';
     return Scaffold(
       appBar: AppBar(
-        
         backgroundColor: Colors.blueAccent,
         centerTitle: true,
         title: Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(Icons.lock, color: Colors.white),
+            Image.asset(
+              'assets/images/da_logo.png',
+              height: 40,
+              fit: BoxFit.contain,
+              errorBuilder: (context, error, stackTrace) {
+                return Icon(Icons.lock, color: Colors.white);
+              },
+            ),
             const SizedBox(width: 12),
             const Text(
-              'Please login to DA portal',
-              style: TextStyle(color: Colors.white, fontSize: 18),
+              'DA Portal',
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+              ),
             ),
           ],
         ),
       ),
       body: Column(
         children: [
-            SizedBox(height: MediaQuery.of(context).size.height * 0.2),
+           // SizedBox(height: MediaQuery.of(context).size.height * 0.2),
           Expanded(child: PortalWebView(url: portalUrl)),
         ],
       ),
