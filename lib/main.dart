@@ -1,7 +1,8 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:webview_flutter/webview_flutter.dart';
+import 'dart:async';
+import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
 void main() {
   SystemChrome.setSystemUIOverlayStyle(
@@ -60,16 +61,15 @@ class _MyHomePageState extends State<MyHomePage> {
         statusBarIconBrightness: Brightness.dark,
         systemNavigationBarColor: Colors.white,
       ),
-      child: Scaffold(
-        backgroundColor: Colors.white,
-
-        // ❌ REMOVE extendBodyBehindAppBar
-        // extendBodyBehindAppBar: true,
-
-        body: SafeArea(
-          top: true,
-          bottom: true,
-          child: PortalWebView(url: AppConfig.portalUrl),
+      child: SafeArea(
+        top: false,
+        bottom: true,
+        child: Scaffold(
+          backgroundColor: Colors.white,
+          body: Padding(
+            padding: EdgeInsets.only(top: MediaQuery.of(context).padding.top),
+            child: PortalWebView(url: AppConfig.portalUrl),
+          ),
         ),
       ),
     );
@@ -85,42 +85,56 @@ class PortalWebView extends StatefulWidget {
 }
 
 class _PortalWebViewState extends State<PortalWebView> {
-  late final WebViewController _controller;
+  InAppWebViewController? _controller;
   bool isLoading = true;
   String? errorMessage;
+  int _retryAttempts = 0;
+  final int _maxRetries = 3;
+  Timer? _retryTimer;
 
   @override
   void initState() {
     super.initState();
-
     print('🌐 Loading URL: ${widget.url}');
     print('🔧 Release Mode: $kReleaseMode');
+  }
 
-    _controller = WebViewController()
-      ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..setBackgroundColor(Colors.white)
-      ..setUserAgent(
-          'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Mobile Safari/537.36')
-      ..enableZoom(true)
-      ..setOnConsoleMessage((msg) {
-        print("🔴 JS Console: ${msg.message}");
-      })
-      ..setNavigationDelegate(
-        NavigationDelegate(
-          onPageStarted: (url) {
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      children: [
+        InAppWebView(
+          initialUrlRequest: URLRequest(url: WebUri(widget.url)),
+          initialOptions: InAppWebViewGroupOptions(
+            crossPlatform: InAppWebViewOptions(
+              javaScriptEnabled: true,
+              useOnDownloadStart: true,
+              mediaPlaybackRequiresUserGesture: false,
+            ),
+            android: AndroidInAppWebViewOptions(
+              useHybridComposition: true,
+            ),
+          ),
+          onWebViewCreated: (controller) {
+            _controller = controller;
+          },
+          onConsoleMessage: (controller, consoleMessage) {
+            print('🔴 JS Console [${consoleMessage.messageLevel}]: ${consoleMessage.message}');
+          },
+          onLoadStart: (controller, url) {
             setState(() {
               isLoading = true;
               errorMessage = null;
             });
           },
-          onPageFinished: (url) async {
+          onLoadStop: (controller, url) async {
             setState(() {
               isLoading = false;
             });
 
             // JS error capture
             try {
-              await _controller.runJavaScript('''
+              await controller.evaluateJavascript(source: '''
                 window.onerror = function(msg, src, line) {
                   console.log("JS Error: " + msg);
                   return true;
@@ -130,29 +144,37 @@ class _PortalWebViewState extends State<PortalWebView> {
               print('❌ JS injection failed: $e');
             }
           },
-          onWebResourceError: (error) {
+          onLoadError: (controller, url, code, message) {
             setState(() {
               isLoading = false;
-              errorMessage =
-                  '${error.description}\n(Error Code: ${error.errorCode})';
+              errorMessage = '$message\n(Error Code: $code)';
             });
+
+            // Schedule automatic retry with exponential backoff
+            if (_retryAttempts < _maxRetries) {
+              _retryAttempts += 1;
+              final delay = Duration(seconds: 2 * _retryAttempts);
+              print('⏱️ Scheduling retry #${_retryAttempts} in ${delay.inSeconds}s');
+              _retryTimer?.cancel();
+              _retryTimer = Timer(delay, () {
+                if (!mounted) return;
+                setState(() {
+                  errorMessage = null;
+                  isLoading = true;
+                });
+                _controller?.loadUrl(urlRequest: URLRequest(url: WebUri(widget.url)));
+              });
+            } else {
+              print('⚠️ Max retry attempts reached ($_maxRetries)');
+            }
           },
-          onNavigationRequest: (req) {
-            return NavigationDecision.navigate;
+          onDownloadStartRequest: (controller, download) {
+            // Optional: handle downloads separately if needed
+            print('📥 Download requested: ${download.url}');
           },
         ),
-      )
-      ..loadRequest(Uri.parse(widget.url));
-  }
 
-  @override
-  Widget build(BuildContext context) {
-    return Stack(
-      children: [
-        WebViewWidget(controller: _controller),
-
-        if (isLoading)
-          const Center(child: CircularProgressIndicator()),
+        if (isLoading) const Center(child: CircularProgressIndicator()),
 
         if (errorMessage != null)
           Center(
@@ -165,8 +187,7 @@ class _PortalWebViewState extends State<PortalWebView> {
                   const SizedBox(height: 16),
                   const Text(
                     'Failed to load portal',
-                    style:
-                        TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                   ),
                   const SizedBox(height: 8),
                   Text(
@@ -177,13 +198,20 @@ class _PortalWebViewState extends State<PortalWebView> {
                   const SizedBox(height: 16),
                   ElevatedButton(
                     onPressed: () {
+                      // Manual retry: cancel any scheduled retries and reload now
+                      _retryTimer?.cancel();
+                      _retryAttempts = 0;
                       setState(() {
                         errorMessage = null;
                         isLoading = true;
                       });
-                      _controller.loadRequest(Uri.parse(widget.url));
+                      _controller?.loadUrl(urlRequest: URLRequest(url: WebUri(widget.url)));
                     },
-                    child: const Text('Retry'),
+                    style: ElevatedButton.styleFrom(
+                      shape: const CircleBorder(),
+                      padding: const EdgeInsets.all(12),
+                    ),
+                    child: const Icon(Icons.refresh),
                   )
                 ],
               ),
@@ -191,5 +219,11 @@ class _PortalWebViewState extends State<PortalWebView> {
           ),
       ],
     );
+  }
+
+  @override
+  void dispose() {
+    _retryTimer?.cancel();
+    super.dispose();
   }
 }
