@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'dart:async';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
+import 'package:intl/intl.dart';
 
 void main() {
   SystemChrome.setSystemUIOverlayStyle(
@@ -99,6 +100,96 @@ class _PortalWebViewState extends State<PortalWebView> {
     print('🔧 Release Mode: $kReleaseMode');
   }
 
+  Future<void> _showDatePicker(String inputId) async {
+    final DateTime? picked = await showDatePicker(
+      context: context,
+      initialDate: DateTime.now(),
+      firstDate: DateTime(2000),
+      lastDate: DateTime(2100),
+      builder: (context, child) {
+        return Theme(
+          data: Theme.of(context).copyWith(
+            colorScheme: ColorScheme.light(
+              primary: Colors.deepPurple,
+              onPrimary: Colors.white,
+              onSurface: Colors.black,
+            ),
+          ),
+          child: child!,
+        );
+      },
+    );
+
+    if (picked != null && _controller != null) {
+      final formattedDate = DateFormat('yyyy-MM-dd').format(picked);
+      final displayDate = DateFormat('dd/MM/yyyy').format(picked);
+      
+      await _controller!.evaluateJavascript(source: '''
+        (function() {
+          var input = document.getElementById('$inputId');
+          if (input) {
+            input.value = '$displayDate';
+            input.setAttribute('data-value', '$formattedDate');
+            
+            // Trigger change events
+            var event = new Event('input', { bubbles: true });
+            input.dispatchEvent(event);
+            event = new Event('change', { bubbles: true });
+            input.dispatchEvent(event);
+            
+            console.log('Date set: $displayDate');
+          }
+        })();
+      ''');
+    }
+  }
+
+  Future<void> _showTimePicker(String inputId) async {
+    final TimeOfDay? picked = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.now(),
+      builder: (context, child) {
+        return Theme(
+          data: Theme.of(context).copyWith(
+            colorScheme: ColorScheme.light(
+              primary: Colors.deepPurple,
+              onPrimary: Colors.white,
+              onSurface: Colors.black,
+            ),
+          ),
+          child: child!,
+        );
+      },
+    );
+
+    if (picked != null && _controller != null) {
+      final hour = picked.hour.toString().padLeft(2, '0');
+      final minute = picked.minute.toString().padLeft(2, '0');
+      final timeString = '$hour:$minute';
+      
+      // Format for display (12-hour format)
+      final displayTime = picked.format(context);
+      
+      await _controller!.evaluateJavascript(source: '''
+        (function() {
+          var input = document.getElementById('$inputId');
+          if (input) {
+            input.value = '$displayTime';
+            input.setAttribute('data-value', '$timeString');
+            
+            // Trigger change events
+            var event = new Event('input', { bubbles: true });
+            input.dispatchEvent(event);
+            event = new Event('change', { bubbles: true });
+            input.dispatchEvent(event);
+            
+            console.log('Time set: $displayTime');
+          }
+        })();
+      ''');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Stack(
@@ -117,6 +208,26 @@ class _PortalWebViewState extends State<PortalWebView> {
           ),
           onWebViewCreated: (controller) {
             _controller = controller;
+            
+            // Add JavaScript handler for date/time picker
+            controller.addJavaScriptHandler(
+              handlerName: 'flutterDatePicker',
+              callback: (args) async {
+                if (args.isNotEmpty) {
+                  final data = args[0] as Map<dynamic, dynamic>;
+                  final inputId = data['id'] as String;
+                  final inputType = data['type'] as String;
+                  
+                  print('📅 Opening picker for: $inputType (ID: $inputId)');
+                  
+                  if (inputType == 'date' || inputType == 'datetime-local') {
+                    await _showDatePicker(inputId);
+                  } else if (inputType == 'time') {
+                    await _showTimePicker(inputId);
+                  }
+                }
+              },
+            );
           },
           onConsoleMessage: (controller, consoleMessage) {
             print('🔴 JS Console [${consoleMessage.messageLevel}]: ${consoleMessage.message}');
@@ -132,14 +243,90 @@ class _PortalWebViewState extends State<PortalWebView> {
               isLoading = false;
             });
 
-            // JS error capture
+            // Inject JavaScript to intercept date/time inputs
             try {
               await controller.evaluateJavascript(source: '''
-                window.onerror = function(msg, src, line) {
-                  console.log("JS Error: " + msg);
-                  return true;
-                };
+                (function() {
+                  var idCounter = 0;
+                  
+                  function setupDateTimePicker() {
+                    var dateInputs = document.querySelectorAll('input[type="date"], input[type="datetime-local"], input[type="time"]');
+                    
+                    dateInputs.forEach(function(input) {
+                      // Skip if already processed
+                      if (input.hasAttribute('data-flutter-processed')) {
+                        return;
+                      }
+                      
+                      var originalType = input.type;
+                      
+                      // Assign unique ID if not present
+                      if (!input.id) {
+                        input.id = 'date_input_' + (idCounter++);
+                      }
+                      
+                      // Store original type
+                      input.setAttribute('data-original-type', originalType);
+                      input.setAttribute('data-flutter-processed', 'true');
+                      
+                      // Convert to text to prevent native picker
+                      input.type = 'text';
+                      input.readOnly = true;
+                      input.style.cursor = 'pointer';
+                      
+                      // Set placeholder
+                      if (originalType === 'date' || originalType === 'datetime-local') {
+                        input.placeholder = input.placeholder || 'Select date';
+                      } else if (originalType === 'time') {
+                        input.placeholder = input.placeholder || 'Pick a time';
+                      }
+                      
+                      // Add click listener
+                      input.addEventListener('click', function(e) {
+                        e.preventDefault();
+                        window.flutter_inappwebview.callHandler('flutterDatePicker', {
+                          id: input.id,
+                          type: originalType
+                        });
+                      });
+                      
+                      // Also handle focus event
+                      input.addEventListener('focus', function(e) {
+                        e.preventDefault();
+                        input.blur(); // Remove focus
+                        window.flutter_inappwebview.callHandler('flutterDatePicker', {
+                          id: input.id,
+                          type: originalType
+                        });
+                      });
+                      
+                      console.log('✅ Setup Flutter picker for: ' + input.id + ' (type: ' + originalType + ')');
+                    });
+                  }
+                  
+                  // Run on load
+                  setupDateTimePicker();
+                  
+                  // Watch for dynamically added inputs
+                  var observer = new MutationObserver(function(mutations) {
+                    setupDateTimePicker();
+                  });
+                  
+                  observer.observe(document.body, {
+                    childList: true,
+                    subtree: true
+                  });
+                  
+                  // Error handler
+                  window.onerror = function(msg, src, line) {
+                    console.log("JS Error: " + msg);
+                    return true;
+                  };
+                  
+                  console.log('📱 Flutter date/time picker bridge loaded');
+                })();
               ''');
+              print('✅ Date picker bridge injected');
             } catch (e) {
               print('❌ JS injection failed: $e');
             }
@@ -150,7 +337,6 @@ class _PortalWebViewState extends State<PortalWebView> {
               errorMessage = '$message\n(Error Code: $code)';
             });
 
-            // Schedule automatic retry with exponential backoff
             if (_retryAttempts < _maxRetries) {
               _retryAttempts += 1;
               final delay = Duration(seconds: 2 * _retryAttempts);
@@ -169,7 +355,6 @@ class _PortalWebViewState extends State<PortalWebView> {
             }
           },
           onDownloadStartRequest: (controller, download) {
-            // Optional: handle downloads separately if needed
             print('📥 Download requested: ${download.url}');
           },
         ),
@@ -198,7 +383,6 @@ class _PortalWebViewState extends State<PortalWebView> {
                   const SizedBox(height: 16),
                   ElevatedButton(
                     onPressed: () {
-                      // Manual retry: cancel any scheduled retries and reload now
                       _retryTimer?.cancel();
                       _retryAttempts = 0;
                       setState(() {
